@@ -3,25 +3,10 @@ import encodings
 from encodings import utf_8
 import io
 
-from dataclasses import dataclass
 import sys
+from dataclasses import dataclass
 from collections import namedtuple
-import re
-
-a = """
-#define TESTING 1
-
-def myfunc():
-    return TESTING
-
-#ifdef TESTING
-def debug_func():
-    print("whee")
-    if TESTING:
-        print("whoo")
-#endif
-
-"""
+import tokenize
 
 
 def handle_define(tokens, state):
@@ -30,7 +15,7 @@ def handle_define(tokens, state):
         exit(1)
     if len(tokens) > 2:
         state.defs[tokens[1]] = " ".join(tokens[2:])
-    else:
+    else:        
         state.defs[tokens[1]] = ""
 
 def handle_ifdef(tokens, state):
@@ -49,7 +34,7 @@ Directive = namedtuple("Directive", "name handler")
 
 handlers = [
     Directive("#define", handle_define),
-    # Directive("#ifdef", handle_ifdef),
+    Directive("#ifdef", handle_ifdef),
     Directive("#endif", handle_endif)
     # Directive("#ifndef", handle_ifndef)
 ]
@@ -59,7 +44,6 @@ def try_handle_directive(tokens, state):
     for directive in handlers:
         if tokens[0] == directive.name:
             directive.handler(tokens, state)
-            del[state.lines[state.i]]
             return True
     return False
 
@@ -67,41 +51,59 @@ def try_handle_directive(tokens, state):
 class State:
     defs: dict
     skip: bool
-    lines: list
+    out_tokens: list
     i: int
 
-    def __init__(self, lines):
+    def __init__(self, out_tokens):
         self.defs = {}
         self.skip = False
-        self.lines = lines
+        self.out_tokens = out_tokens
         self.i = 0
 
-def preprocess(code):
-    lines = code.split("\n")
-    state = State(lines)
-    while state.i < len(lines):
-        tokens = re.split("(?<=\S)\s+", state.lines[state.i])
-
-        if len(tokens) == 2 and tokens[0] == "#ifdef":
-            handle_ifdef(tokens, state)
-            del[state.lines[state.i]]
+def join_tokens(tokens):
+    if len(tokens) == 0: return ""
+    out = tokens[0].string
+    indent = 0
+    for i in range(1, len(tokens)):
+        if tokens[i].type == tokenize.INDENT:
+            indent += 1
             continue
+        elif tokens[i].type == tokenize.DEDENT:
+            indent -= 1
+            continue
+        elif ((tokens[i-1].type in (tokenize.NEWLINE, tokenize.DEDENT, tokenize.INDENT))
+              and not (tokens[i].type in (tokenize.NEWLINE, tokenize.COMMENT))):
+            out += "    "*indent
+        if tokens[i-1].type == tokenize.NAME and tokens[i].type == tokenize.NAME:
+            out += " "
+        out += tokens[i].string
+    return out
         
-        for j in range(len(tokens)):
-            for definition in state.defs: # GROSS
-                tokens[j] = tokens[j].replace(definition, state.defs[definition])                
+def preprocess(code):
+    f = io.BytesIO(code)
+    stream = tokenize.tokenize(f.readline)
+    
+    out_tokens = []
+    state = State(out_tokens)
+    next(stream)
+    for token in stream:
+        if state.skip: continue        
+        
+        if token.type == tokenize.NAME and token.string in state.defs:                
+            out_tokens.append(tokenize.TokenInfo(
+                type=tokenize.NAME,
+                string=state.defs[token.string],
+                start=None, end=None, line=None
+            ))
+        elif token.type == tokenize.COMMENT:
+            dir_tokens = token.string.split()
+            try_handle_directive(dir_tokens, state)
+        else:
+            out_tokens.append(token)
 
-        if try_handle_directive(tokens, state):
-            continue
+            
+    return join_tokens(out_tokens)
 
-        if state.skip:
-            del state.lines[state.i]
-            continue
-
-        state.lines[state.i] = " ".join(tokens)
-        state.i += 1
-
-    return "\n".join(lines)
 
 def encode(input_string):
     print(encoded_bytes)
@@ -122,17 +124,15 @@ class IncrementalDecoder(utf_8.IncrementalDecoder):
             buff = self.buffer
             self.buffer = b""
             return super(IncrementalDecoder, self,).decode(
-                preprocess(buff.decode()).encode(), final=True
+                preprocess(buff).encode(), final=True
             )
         else:
             return ""
-
 
 class StreamReader(utf_8.StreamReader):
     def __init__(self, *args, **kwargs):
         codecs.StreamReader.__init__(self, *args, **kwargs)
         self.stream = io.StringIO("print('hi')")
-
         
 def custom_search_function(encoding_name):
     # print(encoding_name)
@@ -149,3 +149,4 @@ def custom_search_function(encoding_name):
     )
 
 codecs.register(custom_search_function)
+
